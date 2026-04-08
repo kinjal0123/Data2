@@ -15,7 +15,7 @@ def scrape_boston_cafes(main_area_name, area_code_prefix):
     options.add_argument("--disable-blink-features=AutomationControlled")
     
     driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=options)
-    wait = WebDriverWait(driver, 30) # USA networks  30s wait is enough
+    wait = WebDriverWait(driver, 30) # USA networks  30s 
 
     # Boston Specific Neighborhoods
     landmarks = [
@@ -24,7 +24,7 @@ def scrape_boston_cafes(main_area_name, area_code_prefix):
         "Seaport District Boston", 
         "South End Boston", 
         "Beacon Hill Boston",
-        "Cambridge near Harvard Square" # Boston meta-area ka part hai
+        "Cambridge near Harvard Square" 
     ]
     sub_queries = [f"Best Cafes in {landmark}" for landmark in landmarks]
     
@@ -36,14 +36,14 @@ def scrape_boston_cafes(main_area_name, area_code_prefix):
         driver.get(f"https://www.google.com/maps/search/{sub_query.replace(' ', '+')}")
         time.sleep(8) # International page load buffer
 
-        # --- STEP 1: DEEP SCROLLING ---
+        # DEEP SCROLLING
         print("Scrolling to load all Boston results... Please wait.")
         try:
             scrollable_div = wait.until(EC.presence_of_element_located((By.XPATH, '//div[@role="feed"]')))
             last_height = driver.execute_script("return arguments[0].scrollHeight", scrollable_div)
             while True:
                 driver.execute_script('arguments[0].scrollTop = arguments[0].scrollHeight', scrollable_div)
-                time.sleep(4) # Boston maps results heavy hote hain
+                time.sleep(4) 
                 new_height = driver.execute_script("return arguments[0].scrollHeight", scrollable_div)
                 if new_height == last_height:
                     time.sleep(3)
@@ -53,7 +53,7 @@ def scrape_boston_cafes(main_area_name, area_code_prefix):
                 last_height = new_height
         except: pass
 
-        # --- STEP 2: PRECISE EXTRACTION ---
+        # PRECISE EXTRACTION
         cafe_elements = driver.find_elements(By.CLASS_NAME, "hfpxzc")
         print(f"Found {len(cafe_elements)} potential Boston results.")
 
@@ -67,12 +67,11 @@ def scrape_boston_cafes(main_area_name, area_code_prefix):
                 time.sleep(1.5)
                 driver.execute_script("arguments[0].click();", cafe)
                 
-                # --- FIX: Strict Sync for USA Data ---
-                # Panel change hone ka intezar (Title match)
+                
                 try:
                     wait.until(lambda d: d.find_element(By.XPATH, '//h1[contains(@class, "DUwDvf")]').text.strip().lower() == name.lower())
                 except:
-                    time.sleep(5) # USA maps interface thoda slow sync hota hai
+                    time.sleep(5)
 
                 # Address sync buffer
                 time.sleep(3) 
@@ -89,7 +88,7 @@ def scrape_boston_cafes(main_area_name, area_code_prefix):
                 url = driver.current_url
                 coords = re.search(r'@([-?\d\.]+),([-?\d\.]+)', url)
                 
-                # Zip Code Extraction (USA Zip codes are 5 digits, e.g., 02116)
+                # Zip Code Extraction 
                 zip_match = re.search(r'\b\d{5}\b', full_address)
                 zip_code = zip_match.group(0) if zip_match else "02108" # Boston Common default Zip
 

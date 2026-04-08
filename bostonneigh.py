@@ -54,7 +54,7 @@ def scrape_boston(city_code="BOS"):
 
     for area in neighborhoods:
         query = f"Cafes Coffee Shops in {area}"
-        print(f"\n📍 Scanning: {area}")
+        print(f"\n Scanning: {area}")
         driver.get("https://www.google.com/maps/search/" + query.replace(" ", "+"))
         time.sleep(8)
 
