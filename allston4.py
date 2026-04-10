@@ -5,101 +5,106 @@ import re
 from selenium import webdriver
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.common.by import By
-from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
 from webdriver_manager.chrome import ChromeDriverManager
-from bs4 import BeautifulSoup
 
-# --- Configuration ---
-INPUT_FILE = 'Allston_Cafes_Final_Updated.csv'
-OUTPUT_FILE = 'cafe_menus_cleaned.csv'
+def highlight_and_click(driver, element):
+    driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", element)
+    driver.execute_script("arguments[0].setAttribute('style', 'border: 5px solid red; background: yellow;');", element)
+    time.sleep(2) 
+    driver.execute_script("arguments[0].click();", element)
 
-chrome_options = Options()
-# chrome_options.add_argument("--headless") 
-driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=chrome_options)
+# 1. Configuration
+INPUT_CSV = 'Allston_Cafes_Accurate.csv'
+OUTPUT_CSV = 'Cafes_Menu_Final_Data.csv'
 
-# Banned words jo menu ka part nahi hote
-BANNED_WORDS = {
-    'sign in', 'order now', 'login', 'cart', 'checkout', 'my account', 'locations', 
-    'privacy policy', 'terms of service', 'follow us', 'facebook', 'instagram', 
-    'twitter', 'copyright', 'all rights reserved', 'contact us', 'view nutrition', 
-    'find a store', 'gift cards', 'careers', 'newsletter', 'search', 'click here'
-}
+options = webdriver.ChromeOptions()
+options.add_argument("--window-size=1920,1080")
+options.add_argument("--lang=en")
+driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=options)
+wait = WebDriverWait(driver, 25)
 
-def get_pure_menu(url):
-    try:
-        driver.get(url)
-        time.sleep(7) 
+try:
+    df = pd.read_csv(INPUT_CSV)
+except:
+    print(f"Error: {INPUT_CSV} nahi mila!")
+    exit()
 
-        # Step 1: Specific Menu Page dhundna (taki home page ka kachra na aaye)
-        try:
-            menu_element = driver.find_element(By.PARTIAL_LINK_TEXT, 'Menu')
-            menu_element.click()
-            time.sleep(5)
-        except:
-            pass # Agar click nahi hua toh current page hi scan karenge
-
-        soup = BeautifulSoup(driver.page_source, 'html.parser')
-        
-        # Faltu tags uda do
-        for tag in soup(['script', 'style', 'nav', 'footer', 'header', 'aside', 'button']):
-            tag.decompose()
-
-        # Step 2: Sirf un areas ko target karo jahan menu hone ke chances hain
-        # Common menu tags: h3, h4, span (price ke sath), li
-        potential_items = soup.find_all(['h3', 'h4', 'h5', 'p', 'span', 'li'])
-        
-        extracted_menu = []
-        for item in potential_items:
-            text = item.get_text().strip()
-            
-            # Filtering logic:
-            # 1. Text bahut chota ya bahut bada na ho (item names are usually 3-50 chars)
-            # 2. Text banned words list mein na ho
-            # 3. Text mein koi number/price ho ya wo kisi heading ka part ho
-            if 3 < len(text) < 60:
-                low_text = text.lower()
-                
-                # Check if it contains banned phrases
-                if any(word in low_text for word in BANNED_WORDS):
-                    continue
-                
-                # Pattern check: Agar "Sign in" ya "Harvard Square" jaisa generic info hai toh skip
-                if re.search(r'(\d+\.\d{2})|(\$)', text) or len(text.split()) < 6:
-                    # Duplicate check
-                    if text not in extracted_menu:
-                        extracted_menu.append(text)
-        
-        return extracted_menu
-
-    except Exception as e:
-        print(f"Error: {e}")
-        return []
-
-# --- Main Run ---
-df = pd.read_csv(INPUT_FILE)
-
-with open(OUTPUT_FILE, 'w', newline='', encoding='utf-8') as f:
+with open(OUTPUT_CSV, 'w', newline='', encoding='utf-8') as f:
     writer = csv.writer(f)
-    writer.writerow(['Cafe Name', 'Menu Item'])
+    writer.writerow(['Shop Name', 'Menu Item', 'Price'])
 
     for index, row in df.iterrows():
-        name = row['Name']
-        url = row['Website']
+        cafe_name = row['Name']
+        cafe_address = row['Full Address']
         
-        if pd.isna(url) or not str(url).startswith('http'):
-            continue
+        search_query = f"{cafe_name} {cafe_address}"
+        print(f"\n--- Processing: {cafe_name} ---")
 
-        print(f"Fetching Menu for: {name}")
-        menu_list = get_pure_menu(url)
+        try:
+            driver.get(f"https://www.google.com/maps/search/{search_query.replace(' ', '+')}")
+            time.sleep(8)
 
-        if menu_list:
-            for item in menu_list:
-                writer.writerow([name, item])
-        else:
-            writer.writerow([name, "Manual Check Required"])
-        
-        print(f"Waiting...")
-        time.sleep(5)
+            # STEP 1: Click Menu Tab
+            try:
+                menu_tab_xpath = "//div[@role='tablist']//button[contains(@aria-label, 'Menu')] | //div[@role='tablist']//div[text()='Menu']"
+                menu_tab = wait.until(EC.element_to_be_clickable((By.XPATH, menu_tab_xpath)))
+                highlight_and_click(driver, menu_tab)
+                time.sleep(5)
+            except:
+                print("Skipping: Menu Tab not found.")
+                continue
+
+            # STEP 2: Click External Link
+            try:
+                link_xpath = "//a[contains(@data-item-id, 'menu')] | //a[.//div[contains(text(), 'Menu')]]"
+                external_link = wait.until(EC.presence_of_element_located((By.XPATH, link_xpath)))
+                
+                main_window = driver.current_window_handle
+                highlight_and_click(driver, external_link)
+                time.sleep(10)
+
+                # STEP 3: Switch & Extract Menu
+                if len(driver.window_handles) > 1:
+                    driver.switch_to.window(driver.window_handles[1])
+                    time.sleep(7) 
+
+                    # Patterns for extraction
+                    price_pattern = r"\$\d+(?:\.\d{2})?"
+                    
+                
+                    elements = driver.find_elements(By.XPATH, "//div[contains(@class, 'item')] | //li | //tr | //div[@role='listitem']")
+                    
+                    if not elements: # Fallback agar specific containers na milein
+                        elements = driver.find_elements(By.XPATH, "//div | //h3 | //h4 | //span")
+
+                    found_items = set()
+                    for el in elements:
+                        try:
+                            raw_text = el.text.strip()
+                            if raw_text and '$' in raw_text and len(raw_text) < 150:
+                                if raw_text not in found_items:
+                                    match = re.search(price_pattern, raw_text)
+                                    if match:
+                                        price = match.group()
+                                        # Cleaning: if multiple lines are there mostly first line will be name
+                                        lines = raw_text.split('\n')
+                                        item_name = lines[0] if lines[0] != price else "Item"
+                                        
+                                        # If still having problem we can see by removing price
+                                        if item_name == "Item" or len(item_name) < 2:
+                                            item_name = raw_text.replace(price, '').strip()
+
+                                        writer.writerow([cafe_name, item_name, price])
+                                        found_items.add(raw_text)
+                        except: continue
+
+                    driver.close()
+                    driver.switch_to.window(main_window)
+            except: print("Link Not Found.")
+        except Exception as e:
+            print(f"Error skipping {cafe_name}")
 
 driver.quit()
-print("Cleaned data saved!")
+print("Process Complete!")
