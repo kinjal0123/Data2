@@ -1,110 +1,94 @@
-import pandas as pd
 import time
-import csv
+import requests
 import re
+import pytesseract
+from io import BytesIO
+from PIL import Image
 from selenium import webdriver
 from selenium.webdriver.chrome.service import Service
+from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.by import By
-from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.support import expected_conditions as EC
 from webdriver_manager.chrome import ChromeDriverManager
+from bs4 import BeautifulSoup
+from urllib.parse import urljoin
 
-def highlight_and_click(driver, element):
-    driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", element)
-    driver.execute_script("arguments[0].setAttribute('style', 'border: 5px solid red; background: yellow;');", element)
-    time.sleep(2) 
-    driver.execute_script("arguments[0].click();", element)
+# --- CONFIG ---
+pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
 
-# 1. Configuration
-INPUT_CSV = 'Allston_Cafes_Accurate.csv'
-OUTPUT_CSV = 'Cafes_Menu_Final_Data.csv'
+def get_driver():
+    chrome_options = Options()
+    chrome_options.add_argument("--headless") # Runs in the background
+    chrome_options.add_argument("--no-sandbox")
+    chrome_options.add_argument("--disable-dev-shm-usage")
+    chrome_options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+    
+    service = Service(ChromeDriverManager().install())
+    return webdriver.Chrome(service=service, options=chrome_options)
 
-options = webdriver.ChromeOptions()
-options.add_argument("--window-size=1920,1080")
-options.add_argument("--lang=en")
-driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=options)
-wait = WebDriverWait(driver, 25)
+def extract_logic(text):
+    """Deep Regex to catch item and price patterns like 'Coffee $5.50' or 'Sandwich 12'"""
+    # Pattern: Captures text followed by a currency symbol and digits
+    pattern = r"([A-Za-z\s'&]{4,30})\s*[:\.\-]*\s*[\$\₹]?\s*(\d{1,3}(?:\.\d{2})?)"
+    return re.findall(pattern, text)
 
-try:
-    df = pd.read_csv(INPUT_CSV)
-except:
-    print(f"Error: {INPUT_CSV} nahi mila!")
-    exit()
+def aggressive_scrape(base_url):
+    driver = get_driver()
+    target_urls = [urljoin(base_url, p) for p in ["/menu", "/menu/", "/all-day-menu"]]
+    
+    final_menu = {}
 
-with open(OUTPUT_CSV, 'w', newline='', encoding='utf-8') as f:
-    writer = csv.writer(f)
-    writer.writerow(['Shop Name', 'Menu Item', 'Price'])
-
-    for index, row in df.iterrows():
-        cafe_name = row['Name']
-        cafe_address = row['Full Address']
-        
-        search_query = f"{cafe_name} {cafe_address}"
-        print(f"\n--- Processing: {cafe_name} ---")
-
+    for url in target_urls:
+        print(f"\n Launching Browser for: {url}")
         try:
-            driver.get(f"https://www.google.com/maps/search/{search_query.replace(' ', '+')}")
-            time.sleep(8)
+            driver.get(url)
+            time.sleep(5) # Wait for JavaScript to load fully
+            
+            # Action 1: Full Page Text Extraction
+            page_source = driver.page_source
+            soup = BeautifulSoup(page_source, 'html.parser')
+            
+            # Strategy A: Text Parsing
+            # Hum poore page ka text nikal kar regex chalayenge
+            raw_text = driver.find_element(By.TAG_NAME, "body").text
+            items = extract_logic(raw_text)
+            
+            for item, price in items:
+                final_menu[item.strip()] = price
 
-            # STEP 1: Click Menu Tab
-            try:
-                menu_tab_xpath = "//div[@role='tablist']//button[contains(@aria-label, 'Menu')] | //div[@role='tablist']//div[text()='Menu']"
-                menu_tab = wait.until(EC.element_to_be_clickable((By.XPATH, menu_tab_xpath)))
-                highlight_and_click(driver, menu_tab)
-                time.sleep(5)
-            except:
-                print("Skipping: Menu Tab not found.")
-                continue
+            # Strategy B: Image Scraping (If text is low)
+            if len(final_menu) < 5:
+                print(" Text not found, images being scan...")
+                images = soup.find_all('img')
+                for img in images[:10]: # Top 10 images
+                    src = img.get('src') or img.get('data-src')
+                    if src:
+                        img_url = urljoin(url, src)
+                        if ".jpg" in img_url or ".png" in img_url:
+                            try:
+                                res = requests.get(img_url, timeout=5)
+                                pic = Image.open(BytesIO(res.content))
+                                ocr_text = pytesseract.image_to_string(pic)
+                                ocr_items = extract_logic(ocr_text)
+                                for i, p in ocr_items:
+                                    final_menu[i.strip()] = p
+                            except:
+                                continue
 
-            # STEP 2: Click External Link
-            try:
-                link_xpath = "//a[contains(@data-item-id, 'menu')] | //a[.//div[contains(text(), 'Menu')]]"
-                external_link = wait.until(EC.presence_of_element_located((By.XPATH, link_xpath)))
-                
-                main_window = driver.current_window_handle
-                highlight_and_click(driver, external_link)
-                time.sleep(10)
-
-                # STEP 3: Switch & Extract Menu
-                if len(driver.window_handles) > 1:
-                    driver.switch_to.window(driver.window_handles[1])
-                    time.sleep(7) 
-
-                    # Patterns for extraction
-                    price_pattern = r"\$\d+(?:\.\d{2})?"
-                    
-                
-                    elements = driver.find_elements(By.XPATH, "//div[contains(@class, 'item')] | //li | //tr | //div[@role='listitem']")
-                    
-                    if not elements: # Fallback agar specific containers na milein
-                        elements = driver.find_elements(By.XPATH, "//div | //h3 | //h4 | //span")
-
-                    found_items = set()
-                    for el in elements:
-                        try:
-                            raw_text = el.text.strip()
-                            if raw_text and '$' in raw_text and len(raw_text) < 150:
-                                if raw_text not in found_items:
-                                    match = re.search(price_pattern, raw_text)
-                                    if match:
-                                        price = match.group()
-                                        # Cleaning: if multiple lines are there mostly first line will be name
-                                        lines = raw_text.split('\n')
-                                        item_name = lines[0] if lines[0] != price else "Item"
-                                        
-                                        # If still having problem we can see by removing price
-                                        if item_name == "Item" or len(item_name) < 2:
-                                            item_name = raw_text.replace(price, '').strip()
-
-                                        writer.writerow([cafe_name, item_name, price])
-                                        found_items.add(raw_text)
-                        except: continue
-
-                    driver.close()
-                    driver.switch_to.window(main_window)
-            except: print("Link Not Found.")
         except Exception as e:
-            print(f"Error skipping {cafe_name}")
+            print(f"[!] Error on {url}: {e}")
 
-driver.quit()
-print("Process Complete!")
+    driver.quit()
+
+    # Results Print
+    if final_menu:
+        print("\n" + "="*50)
+        print(f"{'ITEM NAME':<35} | {'PRICE':<10}")
+        print("="*50)
+        for item, price in sorted(final_menu.items()):
+            if len(item) > 3:
+                print(f"{item[:35]:<35} | ${price}")
+    else:
+        print("\n Hard Luck! Website has blocked your url.")
+
+if __name__ == "__main__":
+    aggressive_scrape("https://tattebakery.com")
